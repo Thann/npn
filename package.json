@@ -1,0 +1,20 @@
+{
+  "name": "npn",
+  "version": "0.0.1",
+  "description": "Node packages done right™",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/Thann/npn.git"
+  },
+  "bin": "npn.js",
+  "main": "npn.js",
+  "license": "Unlicense",
+  "scripts": {
+    "test": "mocha",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "bmocha": "github:bcoin-org/bmocha#v2.1.2",
+    "eslint": "github:eslint/eslint#v6.1.0"
+  }
+}
