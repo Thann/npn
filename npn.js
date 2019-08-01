@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// depends: git, tar, gzip
 "use_strict";
 
 const os = require('os');
@@ -22,58 +23,98 @@ NPN works best when packages reference urls like this:
 }
 
 module.exports = {
-	async install(name, version, dir='.') {
+	async install(name, version, dir='.', update) {
 		console.debug("Installing:", name, version)
 		ensureDir(dir);
+		if (!name) {
+			try {
+				await installDependencies(dir, true);
+			} catch(e) {}
+			return;
+		}
 		try {
-			let [_name , _version, repo] = [name , version, null];
-			if (!version) {
-				[_name, _version, repo] = parseVersion(name);
-			}
-			const [rel, ver] = /^([\^~=>]*)(.*)$/.exec(version).splice(1,3);
-			console.debug("    ====>", _name, rel, ver, repo)
-			dir += '/node_modules/' + _name;
-			if (!repo) { // Attempt to scry the git url from the NPM registry
-				const infoUrl = `https://registry.npmjs.org/${name}/`;
-				const def = JSON.parse(await fetch(infoUrl))
-				// if (def.repository.type === 'git') {
-				// 	//TODO:
-				// 	repo = def.repository.url
-				// }
-				// console.log("AAAAAARRRR", def.repository.url)
+			let [_name , _version, ver, rel, repo] = [
+				name , version, version, null, null];
+			if (name) {
+				if (!version) {
+					[_name, _version, repo] = parseVersion(name);
+				}
+				const [rel, ver] = /^([\^~=>]*)(.*)$/.exec(_version).splice(1,3);
+				console.debug("    ====>", _name, rel, ver, repo)
+				// dir = path.join(dir, 'node_modules', _name);
+				dir += `/node_modules/${_name}`;
+				if (!repo) { // Attempt to scry the git url from the NPM registry
+					const infoUrl = `https://registry.npmjs.org/${name}/`;
+					const def = JSON.parse(await fetch(infoUrl))
+					if (def.repository.type === 'git') {
+						repo = /^(.{1,5}\+)?(.*)$/.exec(def.repository.url)[2];
+					}
+				}
 			}
 			if (repo) {
 				if (fs.existsSync(dir)) {
-					// TODO: cd!
-					const p = spawnSync('git', ['pull', 'origin', version]);
-					console.log("GIT pull:", p.output.toString())
+					const pull = spawnSync('git', ['pull', 'origin', ver], {
+						cwd: dir,
+					});
+					if (!pull.status) { // failed
+						if (ver) { // try prepending "v"
+							console.log('    ====> trying v ')
+							const pull2 = spawnSync('git',
+								['pull', 'origin', `v${ver}`],
+								{ cwd: dir },
+							);
+							if (!pull2.status) { // failed
+								throw new Error("GIT pull2:",
+									pull2.status, pull2.output.toString());
+							}
+						} else {
+							throw new Error("GIT pull:",
+								pull2.status, pull2.output.toString());
+						}
+					}
 				} else {
 					const clone = spawnSync('git', ['clone',
-						...(version? ['--branch', version]: []),
+						...(ver? ['--branch', ver]: []),
 						'--single-branch', '--', repo, dir]);
-					console.log("GIT:", clone.output.toString())
+					if (clone.status) { // failed
+						console.error("GIT:",clone.status, clone.output.toString())
+						if (ver) { // try prepending "v"
+							console.debug('    ====> trying v ')
+ 							const clone2 = spawnSync('git', ['clone',
+								'--branch', `v${ver}`,
+								'--single-branch', '--', repo, dir]);
+							if (clone2.status) { // fail
+								console.error("GIT:",clone.status, clone.output.toString())
+								await tarballInstall(name, ver, dir);
+							}
+						} else {
+							await tarballInstall(name, ver, dir);
+						}
+					}
 				}
 
 				// TODO: gpg
 				// spawnSync('git', ['verify-commit', 'HEAD'])
-			} else  {
+			} else if (name)  {
 				await tarballInstall(name, ver, dir);
 			}
 
 			if (fs.existsSync(dir + '/package.json'))
 				await installDependencies(dir);
-			total_installed += 1;
+			if (name)
+				total_installed += 1;
 		} catch(e) {
 			console.error("ERROR Failed to install:", name, version);
 			console.debug(e);
 			process.exit(1);
 		}
 	},
+	// Remove .git folders
 	async clean() {
 		throw "not implemented"
 	},
 	async update(name) {
-		throw "not implemented"
+		await module.exports.install(name, undefined, '.', true);
 	},
 	async uninstall() {
 		throw "not implemented"
@@ -116,18 +157,18 @@ function ensureDir(dir) {
 	} catch(e) {}
 }
 
-// Download packages from NPM 🤮
+// Download package from NPM 🤮
 async function tarballInstall(name, version, dir) {
 	ensureDir(dir);
-	const untar = spawn('tar', ['xzC', dir, '--strip-components=1']);
 	const url = `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
+	console.debug(` === TARBAL: ${url} `)
+	const untar = spawn('tar', ['xzC', dir, '--strip-components=1']);
 	return fetch(url, async function(request, response, done) {
 		if (response.statusCode === 200) {
 			response.pipe(untar.stdio[0]);
 			untar.on('close', done);
 		} else {
-			console.debug(`ERROR: failed to download [${response.statusCode}]: ${url}`);
-			process.exit(4);
+			throw Error(`ERROR: failed to download [${response.statusCode}]: ${url}`);
 		}
 	});
 }
@@ -185,16 +226,7 @@ if (require.main = module) {
 		switch (process.argv[2]) {
 		case 'i':
 		case 'install':
-			if (process.argv[3]) {
-				await module.exports.install(process.argv[3]);
-			} else {
-				try {
-					await installDependencies(undefined, true);
-				} catch(e) {
-					console.error(e);
-					help(2);
-				}
-			}
+			await module.exports.install(process.argv[3]);
 			console.log(`Installed: ${total_installed} packages.`);
 			break;
 		case 'clean':
@@ -202,6 +234,7 @@ if (require.main = module) {
 			break;
 		case 'update':
 			await module.exports.update(process.argv[3]);
+			console.log(`Installed: ${total_installed} packages.`);
 			break;
 		case 'rm':
 		case 'uninstall':
